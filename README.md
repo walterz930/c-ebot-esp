@@ -19,6 +19,7 @@ ESP32 DevKit port of c-ebot. The ESP32 hosts the web dashboard and can run a rea
 - Discord test-message endpoint
 - `/status`, `/sync`, `/pause`, `/resume`, `/emergency`, `/health`, `/testdiscord`, `/testchaster`, `/testemlalock`, `/history`, `/logs`, `/nextsync`, `/version`, `/panel`
 - Browser dashboard showing Discord connection state
+- Clear fallback page and Serial Monitor diagnostic when the LittleFS dashboard has not been uploaded
 
 ### Intentionally disabled
 The Chaster/EmlaLock timer read/write engine is still **test-only**. No live timer mutation is performed by this firmware. This is deliberate: the API response formats and account permissions must be verified on-device before enabling automatic additions/subtractions.
@@ -44,11 +45,13 @@ The firmware registers guild-scoped slash commands so changes appear quickly dur
 2. Open this repository.
 3. Connect an ESP32 DevKit.
 4. Build and upload firmware.
-5. Run `PlatformIO: Upload Filesystem Image`.
+5. **Also upload the LittleFS dashboard:** run `pio run --target uploadfs`, or use **PlatformIO: Upload Filesystem Image**.
 6. On first boot connect to `C-EBOT-SETUP` and complete Wi-Fi setup.
 7. Open the IP shown in Serial Monitor.
 8. Configure Discord and press **Test Discord**.
 9. Verify the bot appears online and the slash commands register in the configured guild.
+
+If firmware was uploaded without the filesystem image, the ESP32 will now show a built-in page explaining that the dashboard filesystem is missing instead of returning repeated `index.html does not exist` errors. Uploading the filesystem image once fixes that state.
 
 ## Important security note
 
