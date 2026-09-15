@@ -4,205 +4,44 @@
 #include <WiFiClientSecure.h>
 #include <time.h>
 
-static const char *CHASTER_BASE = "https://api.chaster.app";
-static const char *EMLA_BASE = "https://api.emlalock.com";
+static const char *CHASTER_BASE="https://api.chaster.app";
+static const char *EMLA_BASE="https://api.emlalock.com";
 
-static int64_t jsonEpochSeconds(JsonVariantConst v) {
-  if (v.is<long long>()) {
-    int64_t n = v.as<long long>();
-    return n > 10000000000LL ? n / 1000 : n;
-  }
-  if (v.is<double>()) {
-    double n = v.as<double>();
-    return (int64_t)(n > 10000000000.0 ? n / 1000.0 : n);
-  }
-  if (v.is<const char*>()) {
-    String s = v.as<String>();
-    if (!s.length()) return -1;
-    char *end = nullptr;
-    double n = strtod(s.c_str(), &end);
-    if (end && *end == '\0') return (int64_t)(n > 10000000000.0 ? n / 1000.0 : n);
-    struct tm tmv{};
-    if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d", &tmv.tm_year, &tmv.tm_mon, &tmv.tm_mday, &tmv.tm_hour, &tmv.tm_min, &tmv.tm_sec) == 6) {
-      tmv.tm_year -= 1900; tmv.tm_mon -= 1;
-      return (int64_t)mktime(&tmv);
-    }
-  }
+static int64_t jsonEpochSeconds(JsonVariantConst v){
+  if(v.is<long long>()){int64_t n=v.as<long long>();return n>10000000000LL?n/1000:n;}
+  if(v.is<double>()){double n=v.as<double>();return (int64_t)(n>10000000000.0?n/1000.0:n);}
+  if(v.is<const char*>()){String s=v.as<String>();if(!s.length())return -1;char*end=nullptr;double n=strtod(s.c_str(),&end);if(end&&*end=='\0')return(int64_t)(n>10000000000.0?n/1000.0:n);}
   return -1;
 }
+void SyncEngine::begin(const SyncConfig&config){_cfg=config;_prefs.begin("sync",false);_state.paused=_prefs.getBool("paused",false);_state.status=_state.paused?"PAUSED":"WAITING";_history=_prefs.getString("history","[]");_logs=_prefs.getString("logs","[]");_prefs.end();loadHistory();}
+void SyncEngine::updateConfig(const SyncConfig&config){_cfg=config;}
+bool SyncEngine::configured()const{return _cfg.chasterToken.length()&&_cfg.chasterLockId.length()&&_cfg.emlaUserId.length()&&_cfg.emlaApiKey.length();}
+void SyncEngine::loadHistory(){JsonDocument d;if(deserializeJson(d,_history)||!d.as<JsonArray>().isNull()==false)_history="[]";}
+void SyncEngine::saveHistory(){_prefs.begin("sync",false);_prefs.putString("history",_history);_prefs.putString("logs",_logs);_prefs.putBool("paused",_state.paused);_prefs.end();}
+void SyncEngine::addHistory(const String&action,const String&detail){JsonDocument d;if(deserializeJson(d,_history))d.to<JsonArray>();JsonArray a=d.as<JsonArray>();if(a.isNull())a=d.to<JsonArray>();JsonObject o=a.createNestedObject();o["millis"]=millis();o["action"]=action;o["detail"]=detail;while(a.size()>100)a.remove(0);_history.clear();serializeJson(d,_history);_state.lastAction=action+(detail.length()?": "+detail:"");saveHistory();}
+void SyncEngine::addLog(const String&level,const String&message){JsonDocument d;if(deserializeJson(d,_logs))d.to<JsonArray>();JsonArray a=d.as<JsonArray>();if(a.isNull())a=d.to<JsonArray>();JsonObject o=a.createNestedObject();o["millis"]=millis();o["level"]=level;o["message"]=message;while(a.size()>200)a.remove(0);_logs.clear();serializeJson(d,_logs);saveHistory();Serial.printf("[%s] %s\n",level.c_str(),message.c_str());}
 
-void SyncEngine::begin(const SyncConfig &config) {
-  _cfg = config;
-  _prefs.begin("sync", false);
-  _prefsOpen = true;
-  _state.paused = _prefs.getBool("paused", false);
-  _state.status = _state.paused ? "PAUSED" : "WAITING";
-  _history = _prefs.getString("history", "[]");
-  _logs = _prefs.getString("logs", "[]");
-  _prefs.end(); _prefsOpen = false;
-  loadHistory();
-}
+bool SyncEngine::parseChasterRemaining(const String&json,int64_t&seconds){JsonDocument d;if(deserializeJson(d,json))return false;int64_t now=time(nullptr);const char*keys[]={"endDate","enddate","endAt","endDateTimestamp"};for(const char*k:keys){JsonVariantConst v=d[k];if(!v.isNull()){int64_t ts=jsonEpochSeconds(v);if(ts>0&&now>100000){seconds=max<int64_t>(0,ts-now);return true;}}}JsonObjectConst session=d["session"].as<JsonObjectConst>();for(const char*k:keys){JsonVariantConst v=session[k];if(!v.isNull()){int64_t ts=jsonEpochSeconds(v);if(ts>0&&now>100000){seconds=max<int64_t>(0,ts-now);return true;}}}const char*remaining[]={"remainingTime","remainingSeconds","timeRemaining"};for(const char*k:remaining)if(!d[k].isNull()){seconds=max<int64_t>(0,d[k].as<int64_t>());return true;}return false;}
+bool SyncEngine::parseEmlaRemaining(const String&json,int64_t&seconds){JsonDocument d;if(deserializeJson(d,json))return false;JsonObjectConst s=d["chastitysession"].as<JsonObjectConst>();JsonVariantConst end=s["enddate"];int64_t now=time(nullptr);if(!end.isNull()&&now>100000){int64_t ts=jsonEpochSeconds(end);if(ts>0){seconds=max<int64_t>(0,ts-now);return true;}}const char*keys[]={"remainingtime","remainingseconds","timeleft"};for(const char*k:keys)if(!s[k].isNull()){seconds=max<int64_t>(0,s[k].as<int64_t>());return true;}return false;}
 
-void SyncEngine::updateConfig(const SyncConfig &config) { _cfg = config; }
+bool SyncEngine::readTimers(int64_t&chaster,int64_t&emla,String&error){if(!configured()){error="Credentials are not configured";return false;}WiFiClientSecure tls;tls.setInsecure();HTTPClient http;String url=String(CHASTER_BASE)+"/locks/"+_cfg.chasterLockId;if(!http.begin(tls,url)){error="Could not connect to Chaster";return false;}http.addHeader("Authorization","Bearer "+_cfg.chasterToken);http.addHeader("Accept","application/json");int code=http.GET();String body=http.getString();http.end();if(code<200||code>=300){error="Chaster HTTP "+String(code);return false;}if(!parseChasterRemaining(body,chaster)){error="Could not find Chaster remaining time in API response";return false;}String eurl=String(EMLA_BASE)+"/info?userid="+_cfg.emlaUserId+"&apikey="+_cfg.emlaApiKey;if(!http.begin(tls,eurl)){error="Could not connect to EmlaLock";return false;}code=http.GET();body=http.getString();http.end();if(code<200||code>=300){error="EmlaLock HTTP "+String(code);return false;}if(!parseEmlaRemaining(body,emla)){error="Could not find EmlaLock remaining time in API response";return false;}return true;}
+bool SyncEngine::chasterDelta(int32_t seconds,String&error){String token=seconds<0?_cfg.chasterKeyholderToken:_cfg.chasterToken;if(!token.length()){error=seconds<0?"Chaster keyholder token is required for subtraction":"Chaster token is missing";return false;}WiFiClientSecure tls;tls.setInsecure();HTTPClient http;String url=String(CHASTER_BASE)+"/locks/"+_cfg.chasterLockId+"/update-time";if(!http.begin(tls,url)){error="Could not connect to Chaster";return false;}http.addHeader("Authorization","Bearer "+token);http.addHeader("Accept","application/json");http.addHeader("Content-Type","application/json");JsonDocument d;d["duration"]=seconds;String body;serializeJson(d,body);int code=http.POST(body);String response=http.getString();http.end();if(code<200||code>=300){error="Chaster update HTTP "+String(code)+": "+response;return false;}return true;}
+bool SyncEngine::emlaDelta(int32_t seconds,String&error){String endpoint=seconds>=0?"add":"sub";String url=String(EMLA_BASE)+"/"+endpoint+"?userid="+_cfg.emlaUserId+"&apikey="+_cfg.emlaApiKey+"&value="+String(abs(seconds))+"&text=c-ebot%20sync";if(seconds<0)url+="&holderapikey="+_cfg.emlaKeyholderApiKey;WiFiClientSecure tls;tls.setInsecure();HTTPClient http;if(!http.begin(tls,url)){error="Could not connect to EmlaLock";return false;}int code=http.GET();String response=http.getString();http.end();if(code<200||code>=300){error="EmlaLock update HTTP "+String(code)+": "+response;return false;}return true;}
 
-bool SyncEngine::configured() const {
-  return _cfg.chasterToken.length() && _cfg.chasterLockId.length() && _cfg.emlaUserId.length() && _cfg.emlaApiKey.length();
-}
-
-void SyncEngine::loadHistory() {
-  JsonDocument d;
-  if (deserializeJson(d, _history)) _history = "[]";
-  JsonArray a = d.as<JsonArray>();
-  if (a.isNull()) _history = "[]";
-}
-
-void SyncEngine::saveHistory() {
-  _prefs.begin("sync", false);
-  _prefs.putString("history", _history);
-  _prefs.putString("logs", _logs);
-  _prefs.putBool("paused", _state.paused);
-  _prefs.end();
-}
-
-void SyncEngine::addHistory(const String &action, const String &detail) {
-  JsonDocument d;
-  deserializeJson(d, _history);
-  JsonArray a = d.as<JsonArray>();
-  if (a.isNull()) a = d.to<JsonArray>();
-  JsonObject o = a.createNestedObject();
-  o["millis"] = millis();
-  o["action"] = action;
-  o["detail"] = detail;
-  while (a.size() > 100) a.remove(0);
-  _history.clear(); serializeJson(d, _history);
-  _state.lastAction = action + (detail.length() ? ": " + detail : "");
-  saveHistory();
-}
-
-void SyncEngine::addLog(const String &level, const String &message) {
-  JsonDocument d;
-  deserializeJson(d, _logs);
-  JsonArray a = d.as<JsonArray>();
-  if (a.isNull()) a = d.to<JsonArray>();
-  JsonObject o = a.createNestedObject();
-  o["millis"] = millis(); o["level"] = level; o["message"] = message;
-  while (a.size() > 200) a.remove(0);
-  _logs.clear(); serializeJson(d, _logs); saveHistory();
-  Serial.printf("[%s] %s\n", level.c_str(), message.c_str());
-}
-
-bool SyncEngine::parseChasterRemaining(const String &json, int64_t &seconds) {
-  JsonDocument d;
-  if (deserializeJson(d, json)) return false;
-  int64_t now = time(nullptr);
-  if (now < 100000) now = 0;
-  const char *keys[] = {"endDate", "enddate", "endAt", "endDateTimestamp"};
-  for (const char *k : keys) {
-    JsonVariantConst v = d[k];
-    if (!v.isNull()) { int64_t ts = jsonEpochSeconds(v); if (ts >= 0 && now) { seconds = max<int64_t>(0, ts - now); return true; } }
-  }
-  JsonObjectConst session = d["session"].as<JsonObjectConst>();
-  for (const char *k : keys) {
-    JsonVariantConst v = session[k];
-    if (!v.isNull()) { int64_t ts = jsonEpochSeconds(v); if (ts >= 0 && now) { seconds = max<int64_t>(0, ts - now); return true; } }
-  }
-  const char *remaining[] = {"remainingTime", "remainingSeconds", "timeRemaining"};
-  for (const char *k : remaining) { if (!d[k].isNull()) { seconds = max<int64_t>(0, d[k].as<int64_t>()); return true; } }
-  return false;
-}
-
-bool SyncEngine::parseEmlaRemaining(const String &json, int64_t &seconds) {
-  JsonDocument d;
-  if (deserializeJson(d, json)) return false;
-  JsonObjectConst s = d["chastitysession"].as<JsonObjectConst>();
-  JsonVariantConst end = s["enddate"];
-  int64_t now = time(nullptr);
-  if (!end.isNull() && now > 100000) {
-    int64_t ts = jsonEpochSeconds(end);
-    if (ts >= 0) { seconds = max<int64_t>(0, ts - now); return true; }
-  }
-  const char *keys[] = {"remainingtime", "remainingseconds", "timeleft"};
-  for (const char *k : keys) if (!s[k].isNull()) { seconds = max<int64_t>(0, s[k].as<int64_t>()); return true; }
-  return false;
-}
-
-bool SyncEngine::readTimers(int64_t &chaster, int64_t &emla, String &error) {
-  if (!configured()) { error = "Credentials are not configured"; return false; }
-  WiFiClientSecure tls; tls.setInsecure();
-  HTTPClient http;
-  String url = String(CHASTER_BASE) + "/locks/" + _cfg.chasterLockId;
-  if (!http.begin(tls, url)) { error = "Could not connect to Chaster"; return false; }
-  http.addHeader("Authorization", "Bearer " + _cfg.chasterToken);
-  http.addHeader("Accept", "application/json");
-  int code = http.GET(); String body = http.getString(); http.end();
-  if (code < 200 || code >= 300) { error = "Chaster HTTP " + String(code); return false; }
-  if (!parseChasterRemaining(body, chaster)) { error = "Could not find Chaster remaining time in API response"; return false; }
-
-  String eurl = String(EMLA_BASE) + "/info?userid=" + _cfg.emlaUserId + "&apikey=" + _cfg.emlaApiKey;
-  if (!http.begin(tls, eurl)) { error = "Could not connect to EmlaLock"; return false; }
-  code = http.GET(); body = http.getString(); http.end();
-  if (code < 200 || code >= 300) { error = "EmlaLock HTTP " + String(code); return false; }
-  if (!parseEmlaRemaining(body, emla)) { error = "Could not find EmlaLock remaining time in API response"; return false; }
-  return true;
-}
-
-bool SyncEngine::chasterDelta(int32_t seconds, String &error) {
-  String token = seconds < 0 ? _cfg.chasterKeyholderToken : _cfg.chasterToken;
-  if (!token.length()) { error = seconds < 0 ? "Chaster keyholder token is required for subtraction" : "Chaster token is missing"; return false; }
-  WiFiClientSecure tls; tls.setInsecure(); HTTPClient http;
-  String url = String(CHASTER_BASE) + "/locks/" + _cfg.chasterLockId + "/update-time";
-  if (!http.begin(tls, url)) { error = "Could not connect to Chaster"; return false; }
-  http.addHeader("Authorization", "Bearer " + token); http.addHeader("Accept", "application/json"); http.addHeader("Content-Type", "application/json");
-  JsonDocument d; d["duration"] = seconds; String body; serializeJson(d, body);
-  int code = http.POST(body); String response = http.getString(); http.end();
-  if (code < 200 || code >= 300) { error = "Chaster update HTTP " + String(code) + ": " + response; return false; }
-  return true;
-}
-
-bool SyncEngine::emlaDelta(int32_t seconds, String &error) {
-  String endpoint = seconds >= 0 ? "add" : "sub";
-  String url = String(EMLA_BASE) + "/" + endpoint + "?userid=" + _cfg.emlaUserId + "&apikey=" + _cfg.emlaApiKey + "&value=" + String(abs(seconds)) + "&text=c-ebot%20sync";
-  if (seconds < 0) url += "&holderapikey=" + _cfg.emlaKeyholderApiKey;
-  WiFiClientSecure tls; tls.setInsecure(); HTTPClient http;
-  if (!http.begin(tls, url)) { error = "Could not connect to EmlaLock"; return false; }
-  int code = http.GET(); String response = http.getString(); http.end();
-  if (code < 200 || code >= 300) { error = "EmlaLock update HTTP " + String(code) + ": " + response; return false; }
-  return true;
-}
-
-bool SyncEngine::syncNow() {
-  if (_state.paused) { _state.status = "PAUSED"; _state.message = "Synchronization is paused"; return false; }
-  _state.status = "SYNCING"; _state.message = "Reading both timers"; _state.lastError = "";
-  int64_t c = -1, e = -1; String error;
-  if (!readTimers(c, e, error)) { _state.status = "ERROR"; _state.message = error; _state.lastError = error; addLog("ERROR", error); addHistory("SYNC_FAILED", error); return false; }
-  _state.chasterSeconds = c; _state.emlalockSeconds = e; _state.targetSeconds = max(c, e); _state.lastCheckMillis = millis();
-  if (abs(c - e) <= 2) { _state.status = "SYNCED"; _state.message = "Timers synchronized"; addHistory("SYNCED", "Timers already matched"); return true; }
-  int32_t delta = (int32_t)abs(c - e);
-  if (c < e) { _state.message = "Extending Chaster by " + String(delta) + " seconds"; if (!chasterDelta(delta, error)) goto failed; }
-  else { _state.message = "Extending EmlaLock by " + String(delta) + " seconds"; if (!emlaDelta(delta, error)) goto failed; }
+bool SyncEngine::syncNow(){
+  if(_state.paused){_state.status="PAUSED";_state.message="Synchronization is paused";return false;}
+  _state.status="SYNCING";_state.message="Reading both timers";_state.lastError="";int64_t c=-1,e=-1;String error;
+  if(!readTimers(c,e,error)){_state.status="ERROR";_state.message=error;_state.lastError=error;addLog("ERROR",error);addHistory("SYNC_FAILED",error);return false;}
+  _state.chasterSeconds=c;_state.emlalockSeconds=e;_state.targetSeconds=max(c,e);_state.lastCheckMillis=millis();
+  if(abs(c-e)<=2){_state.status="SYNCED";_state.message="Timers synchronized";addHistory("SYNCED","Timers already matched");return true;}
+  int32_t delta=(int32_t)abs(c-e);bool changed=false;
+  if(c<e){_state.message="Extending Chaster by "+String(delta)+" seconds";changed=chasterDelta(delta,error);}else{_state.message="Extending EmlaLock by "+String(delta)+" seconds";changed=emlaDelta(delta,error);}
+  if(!changed){_state.status="PAUSED";_state.paused=true;_state.message=error;_state.lastError=error;addLog("ERROR",error);addHistory("PAUSED",error);return false;}
   delay(250);
-  if (!readTimers(c, e, error)) goto failed;
-  _state.chasterSeconds = c; _state.emlalockSeconds = e; _state.targetSeconds = max(c, e);
-  if (abs(c - e) > 3) { error = "Verification failed: Chaster=" + String(c) + "s, EmlaLock=" + String(e) + "s"; goto failed; }
-  _state.status = "SYNCED"; _state.message = "Timers synchronized and verified"; _state.lastError = "";
-  addHistory("AUTO_SYNC", "Adjusted lower timer by " + String(delta) + " seconds"); addLog("INFO", _state.message); return true;
-failed:
-  _state.status = "PAUSED"; _state.paused = true; _state.message = error; _state.lastError = error;
-  addLog("ERROR", error); addHistory("PAUSED", error); saveHistory(); return false;
+  if(!readTimers(c,e,error)){_state.status="PAUSED";_state.paused=true;_state.message=error;_state.lastError=error;addLog("ERROR",error);addHistory("PAUSED",error);return false;}
+  _state.chasterSeconds=c;_state.emlalockSeconds=e;_state.targetSeconds=max(c,e);
+  if(abs(c-e)>3){error="Verification failed: Chaster="+String(c)+"s, EmlaLock="+String(e)+"s";_state.status="PAUSED";_state.paused=true;_state.message=error;_state.lastError=error;addLog("ERROR",error);addHistory("PAUSED",error);return false;}
+  _state.status="SYNCED";_state.message="Timers synchronized and verified";addHistory("AUTO_SYNC","Adjusted lower timer by "+String(delta)+" seconds");addLog("INFO",_state.message);return true;
 }
-
-bool SyncEngine::manualDelta(int32_t seconds, const String &actor) {
-  if (!seconds) return false;
-  _state.status = "SYNCING"; _state.message = "Applying manual " + String(seconds > 0 ? "add " : "subtract ") + String(abs(seconds)) + " seconds";
-  String error;
-  if (!chasterDelta(seconds, error) || !emlaDelta(seconds, error)) { _state.status = "ERROR"; _state.message = error; _state.lastError = error; addLog("ERROR", error); addHistory("MANUAL_FAILED", error); return false; }
-  delay(250);
-  int64_t c=-1,e=-1; if (!readTimers(c,e,error) || abs(c-e)>3) { if (!error.length()) error = "Manual verification failed"; _state.status="PAUSED"; _state.paused=true; _state.message=error; _state.lastError=error; addHistory("PAUSED",error); addLog("ERROR",error); return false; }
-  _state.chasterSeconds=c; _state.emlalockSeconds=e; _state.targetSeconds=max(c,e); _state.status="SYNCED"; _state.message="Manual change applied and verified"; _state.lastError=""; addHistory(seconds>0?"MANUAL_ADD":"MANUAL_SUBTRACT",String(abs(seconds))+" seconds by "+actor); return true;
-}
-
-void SyncEngine::pause(const String &reason) { _state.paused=true; _state.status="PAUSED"; _state.message=reason; _state.lastError=reason; addHistory("PAUSED",reason); }
-void SyncEngine::resume() { _state.paused=false; _state.status="WAITING"; _state.message="Automatic synchronization enabled"; _state.lastError=""; addHistory("RESUMED",""); }
-void SyncEngine::loop() { if (!_cfg.intervalSeconds || _state.paused) return; if (millis() - _lastAttempt >= _cfg.intervalSeconds * 1000UL) { _lastAttempt = millis(); syncNow(); } }
-String SyncEngine::historyJson() const { return _history; }
-String SyncEngine::logsJson() const { return _logs; }
+bool SyncEngine::manualDelta(int32_t seconds,const String&actor){if(!seconds)return false;_state.status="SYNCING";_state.message="Applying manual "+String(seconds>0?"add ":"subtract ")+String(abs(seconds))+" seconds";String error;if(!chasterDelta(seconds,error)||!emlaDelta(seconds,error)){_state.status="ERROR";_state.message=error;_state.lastError=error;addLog("ERROR",error);addHistory("MANUAL_FAILED",error);return false;}delay(250);int64_t c=-1,e=-1;if(!readTimers(c,e,error)||abs(c-e)>3){if(!error.length())error="Manual verification failed";_state.status="PAUSED";_state.paused=true;_state.message=error;_state.lastError=error;addHistory("PAUSED",error);addLog("ERROR",error);return false;}_state.chasterSeconds=c;_state.emlalockSeconds=e;_state.targetSeconds=max(c,e);_state.status="SYNCED";_state.message="Manual change applied and verified";_state.lastError="";addHistory(seconds>0?"MANUAL_ADD":"MANUAL_SUBTRACT",String(abs(seconds))+" seconds by "+actor);return true;}
+void SyncEngine::pause(const String&reason){_state.paused=true;_state.status="PAUSED";_state.message=reason;_state.lastError=reason;addHistory("PAUSED",reason);}void SyncEngine::resume(){_state.paused=false;_state.status="WAITING";_state.message="Automatic synchronization enabled";_state.lastError="";addHistory("RESUMED","");}void SyncEngine::loop(){if(!_cfg.intervalSeconds||_state.paused)return;if(millis()-_lastAttempt>=_cfg.intervalSeconds*1000UL){_lastAttempt=millis();syncNow();}}String SyncEngine::historyJson()const{return _history;}String SyncEngine::logsJson()const{return _logs;}
