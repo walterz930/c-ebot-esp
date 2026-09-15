@@ -10,6 +10,7 @@
 WebServer server(80);
 Preferences prefs;
 DiscordBot discord;
+bool littleFsReady=false;
 
 struct Config {
   String chasterToken, chasterKeyholderToken, chasterLockId;
@@ -59,7 +60,9 @@ void saveConfig(JsonDocument &doc){
   if(doc["discordAdminUserId"].is<const char*>())prefs.putString("duid",doc["discordAdminUserId"].as<String>());
   if(doc["discordEnabled"].is<bool>())prefs.putBool("den",doc["discordEnabled"].as<bool>());
   if(doc["autoSync"].is<bool>())prefs.putBool("auto",doc["autoSync"].as<bool>());
-  if(doc["intervalSeconds"].is<uint32_t>())prefs.putUInt("int",max(10U,doc["intervalSeconds"].as<uint32_t>()));prefs.end();loadConfig();
+  if(doc["intervalSeconds"].is<uint32_t>())prefs.putUInt("int",max(10U,doc["intervalSeconds"].as<uint32_t>()));
+  prefs.end();
+  loadConfig();
 }
 void sendJson(JsonDocument &doc,int code=200){String out;serializeJson(doc,out);server.send(code,"application/json",out);}
 bool configured(){return cfg.chasterLockId.length()&&cfg.chasterToken.length()&&cfg.emlaUserId.length()&&cfg.emlaApiKey.length();}
@@ -91,10 +94,14 @@ void discordCommand(const String &command,const String &iid,const String &token,
 }
 void syncOnce(){if(!configured()){state="WAITING";message="Configure Chaster and EmlaLock credentials to begin";return;}state="TEST_ONLY";message="Live Chaster/EmlaLock timer writes are disabled until their on-device API responses are validated";lastError="No timer mutation performed";}
 void handleSync(){syncOnce();handleStatus();}
+void sendFilesystemMissing(){
+  const char *html="<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>C-EBOT filesystem setup</title><style>body{font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:20px;background:#111;color:#eee}code{background:#222;padding:3px 6px;border-radius:4px}li{margin:12px 0}.ok{color:#7ee787}</style></head><body><h1>C-EBOT ESP32</h1><h2>Web dashboard filesystem is not installed</h2><p>The firmware is running correctly, but the LittleFS dashboard files were not uploaded to the ESP32.</p><ol><li>In VS Code, open the C-EBOT project in PlatformIO.</li><li>Run <code>pio run --target uploadfs</code>, or use <b>PlatformIO: Upload Filesystem Image</b>.</li><li>Reset the ESP32 and open this IP address again.</li></ol><p class='ok'>Firmware and Wi-Fi are working. Only the dashboard filesystem is missing.</p></body></html>";
+  server.send(200,"text/html",html);
+}
 void setupRoutes(){
   server.on("/api/status",HTTP_GET,handleStatus);server.on("/api/config",HTTP_GET,handleConfigGet);server.on("/api/config",HTTP_POST,handleConfigPost);server.on("/api/sync",HTTP_POST,handleSync);server.on("/api/pause",HTTP_POST,handlePause);server.on("/api/resume",HTTP_POST,handleResume);
   server.on("/api/discord/test",HTTP_POST,[](){JsonDocument d;bool ok=discord.sendMessage("🧪 c-ebot ESP32 Discord test message.");d["ok"]=ok;d["connected"]=discord.connected();sendJson(d,ok?200:503);});
-  server.onNotFound([](){String p=server.uri(),t="text/plain";if(p=="/"||p=="/index.html"){p="/index.html";t="text/html";}else if(p=="/app.js")t="application/javascript";else if(p=="/style.css")t="text/css";else{server.send(404,"text/plain","Not found");return;}File f=LittleFS.open(p,"r");if(!f){server.send(404,"text/plain","File not found");return;}server.streamFile(f,t);f.close();});
+  server.onNotFound([](){String p=server.uri(),t="text/plain";if(p=="/"||p=="/index.html"){p="/index.html";t="text/html";}else if(p=="/app.js")t="application/javascript";else if(p=="/style.css")t="text/css";else{server.send(404,"text/plain","Not found");return;}File f=LittleFS.open(p,"r");if(!f){if(!littleFsReady&&p=="/index.html")sendFilesystemMissing();else server.send(404,"text/plain","File not found");return;}server.streamFile(f,t);f.close();});
 }
-void setup(){Serial.begin(115200);loadConfig();if(!LittleFS.begin(true))Serial.println("LittleFS mount failed");WiFiManager wm;wm.setConfigPortalTimeout(180);if(!wm.autoConnect("C-EBOT-SETUP"))ESP.restart();Serial.print("C-EBOT IP: ");Serial.println(WiFi.localIP());setupRoutes();server.begin();message="Connected; dashboard ready";if(cfg.discordEnabled&&cfg.discordToken.length()&&cfg.discordApplicationId.length()){DiscordConfig dc=makeDiscordConfig();discord.begin(dc,discordCommand);delay(500);discord.registerCommands();}}
+void setup(){Serial.begin(115200);loadConfig();littleFsReady=LittleFS.begin(true);if(!littleFsReady)Serial.println("LittleFS mount failed");else if(!LittleFS.exists("/index.html"))Serial.println("LittleFS mounted, but /index.html is missing. Upload the filesystem image with: pio run --target uploadfs");WiFiManager wm;wm.setConfigPortalTimeout(180);if(!wm.autoConnect("C-EBOT-SETUP"))ESP.restart();Serial.print("C-EBOT IP: ");Serial.println(WiFi.localIP());setupRoutes();server.begin();message="Connected; dashboard ready";if(!littleFsReady||!LittleFS.exists("/index.html"))message="Wi-Fi connected; dashboard filesystem missing — upload filesystem image";if(cfg.discordEnabled&&cfg.discordToken.length()&&cfg.discordApplicationId.length()){DiscordConfig dc=makeDiscordConfig();discord.begin(dc,discordCommand);delay(500);discord.registerCommands();}}
 void loop(){server.handleClient();discord.loop();if(cfg.autoSync&&cfg.intervalSeconds>0&&millis()-lastAttempt>=cfg.intervalSeconds*1000UL){lastAttempt=millis();syncOnce();}delay(2);}
