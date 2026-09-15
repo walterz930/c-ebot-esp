@@ -26,6 +26,16 @@ uint32_t lastSync=0, lastAttempt=0;
 void syncOnce();
 void discordCommand(const String&,const String&,const String&,const String&,bool);
 
+DiscordConfig makeDiscordConfig(){
+  DiscordConfig dc;
+  dc.token = cfg.discordToken;
+  dc.applicationId = cfg.discordApplicationId;
+  dc.guildId = cfg.discordGuildId;
+  dc.channelId = cfg.discordChannelId;
+  dc.enabled = true;
+  return dc;
+}
+
 void loadConfig(){
   prefs.begin("cebot",true);
   cfg.chasterToken=prefs.getString("ct","");cfg.chasterKeyholderToken=prefs.getString("ckt","");cfg.chasterLockId=prefs.getString("clid","");
@@ -55,7 +65,7 @@ void sendJson(JsonDocument &doc,int code=200){String out;serializeJson(doc,out);
 bool configured(){return cfg.chasterLockId.length()&&cfg.chasterToken.length()&&cfg.emlaUserId.length()&&cfg.emlaApiKey.length();}
 void handleStatus(){JsonDocument d;d["state"]=state;d["message"]=message;d["autoSync"]=cfg.autoSync;d["configured"]=configured();d["chasterSeconds"]=chasterSeconds;d["emlalockSeconds"]=emlaSeconds;d["lastSyncMillis"]=lastSync;d["lastError"]=lastError;d["rssi"]=WiFi.RSSI();d["discordConfigured"]=cfg.discordEnabled&&cfg.discordToken.length()&&cfg.discordApplicationId.length();d["discordConnected"]=discord.connected();sendJson(d);}
 void handleConfigGet(){JsonDocument d;d["chasterLockId"]=cfg.chasterLockId;d["emlaUserId"]=cfg.emlaUserId;d["autoSync"]=cfg.autoSync;d["intervalSeconds"]=cfg.intervalSeconds;d["hasChasterToken"]=cfg.chasterToken.length()>0;d["hasChasterKeyholderToken"]=cfg.chasterKeyholderToken.length()>0;d["hasEmlaApiKey"]=cfg.emlaApiKey.length()>0;d["hasEmlaKeyholderApiKey"]=cfg.emlaKeyholderApiKey.length()>0;d["discordEnabled"]=cfg.discordEnabled;d["discordApplicationId"]=cfg.discordApplicationId;d["discordGuildId"]=cfg.discordGuildId;d["discordChannelId"]=cfg.discordChannelId;d["discordAdminUserId"]=cfg.discordAdminUserId;d["hasDiscordToken"]=cfg.discordToken.length()>0;d["discordConnected"]=discord.connected();sendJson(d);}
-void handleConfigPost(){JsonDocument d;if(deserializeJson(d,server.arg("plain"))){JsonDocument e;e["error"]="Invalid JSON";sendJson(e,400);return;}saveConfig(d);message="Configuration saved";JsonDocument o;o["ok"]=true;o["message"]="Configuration saved";sendJson(o);if(cfg.discordEnabled&&cfg.discordToken.length()&&cfg.discordApplicationId.length()){DiscordConfig dc{cfg.discordToken,cfg.discordApplicationId,cfg.discordGuildId,cfg.discordChannelId,true};discord.begin(dc,discordCommand);discord.registerCommands();}}
+void handleConfigPost(){JsonDocument d;if(deserializeJson(d,server.arg("plain"))){JsonDocument e;e["error"]="Invalid JSON";sendJson(e,400);return;}saveConfig(d);message="Configuration saved";JsonDocument o;o["ok"]=true;o["message"]="Configuration saved";sendJson(o);if(cfg.discordEnabled&&cfg.discordToken.length()&&cfg.discordApplicationId.length()){DiscordConfig dc=makeDiscordConfig();discord.begin(dc,discordCommand);discord.registerCommands();}}
 void setPaused(const String &why){cfg.autoSync=false;prefs.begin("cebot",false);prefs.putBool("auto",false);prefs.end();state="PAUSED";message=why;}
 void handlePause(){setPaused("Automatic synchronization paused");handleStatus();}
 void handleResume(){cfg.autoSync=true;prefs.begin("cebot",false);prefs.putBool("auto",true);prefs.end();state="WAITING";message="Automatic synchronization enabled";handleStatus();}
@@ -86,5 +96,5 @@ void setupRoutes(){
   server.on("/api/discord/test",HTTP_POST,[](){JsonDocument d;bool ok=discord.sendMessage("🧪 c-ebot ESP32 Discord test message.");d["ok"]=ok;d["connected"]=discord.connected();sendJson(d,ok?200:503);});
   server.onNotFound([](){String p=server.uri(),t="text/plain";if(p=="/"||p=="/index.html"){p="/index.html";t="text/html";}else if(p=="/app.js")t="application/javascript";else if(p=="/style.css")t="text/css";else{server.send(404,"text/plain","Not found");return;}File f=LittleFS.open(p,"r");if(!f){server.send(404,"text/plain","File not found");return;}server.streamFile(f,t);f.close();});
 }
-void setup(){Serial.begin(115200);loadConfig();if(!LittleFS.begin(true))Serial.println("LittleFS mount failed");WiFiManager wm;wm.setConfigPortalTimeout(180);if(!wm.autoConnect("C-EBOT-SETUP"))ESP.restart();Serial.print("C-EBOT IP: ");Serial.println(WiFi.localIP());setupRoutes();server.begin();message="Connected; dashboard ready";if(cfg.discordEnabled&&cfg.discordToken.length()&&cfg.discordApplicationId.length()){DiscordConfig dc{cfg.discordToken,cfg.discordApplicationId,cfg.discordGuildId,cfg.discordChannelId,true};discord.begin(dc,discordCommand);delay(500);discord.registerCommands();}}
+void setup(){Serial.begin(115200);loadConfig();if(!LittleFS.begin(true))Serial.println("LittleFS mount failed");WiFiManager wm;wm.setConfigPortalTimeout(180);if(!wm.autoConnect("C-EBOT-SETUP"))ESP.restart();Serial.print("C-EBOT IP: ");Serial.println(WiFi.localIP());setupRoutes();server.begin();message="Connected; dashboard ready";if(cfg.discordEnabled&&cfg.discordToken.length()&&cfg.discordApplicationId.length()){DiscordConfig dc=makeDiscordConfig();discord.begin(dc,discordCommand);delay(500);discord.registerCommands();}}
 void loop(){server.handleClient();discord.loop();if(cfg.autoSync&&cfg.intervalSeconds>0&&millis()-lastAttempt>=cfg.intervalSeconds*1000UL){lastAttempt=millis();syncOnce();}delay(2);}
