@@ -1,1 +1,77 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>C-EBOT ESP32</title><link rel="stylesheet" href="/style.css"></head><body><main><header><div><h1>C-EBOT</h1><p>ESP32 standalone dashboard</p></div><span id="badge" class="badge">Connecting</span></header><section class="grid"><article><small>Chaster</small><strong id="chaster">—</strong></article><article><small>EmlaLock</small><strong id="emla">—</strong></article><article><small>Discord</small><strong id="discord">—</strong></article></section><section class="panel"><div class="row"><b>Status</b><span id="state">—</span></div><p id="message">Loading…</p><p class="muted" id="network"></p></section><section class="actions"><button onclick="post('/api/sync')">Sync now</button><button class="secondary" onclick="post('/api/pause')">Pause</button><button class="secondary" onclick="post('/api/resume')">Resume</button><button class="secondary" onclick="discordTest()">Test Discord</button></section><section class="panel"><h2>Timer configuration</h2><label>Chaster lock ID<input id="lock"></label><label>Chaster token<input id="ct" type="password" placeholder="Leave blank to keep saved token"></label><label>Chaster keyholder token<input id="ckt" type="password" placeholder="Leave blank to keep saved token"></label><label>EmlaLock user ID<input id="uid"></label><label>EmlaLock API key<input id="eak" type="password" placeholder="Leave blank to keep saved key"></label><label>EmlaLock keyholder API key<input id="ekak" type="password" placeholder="Leave blank to keep saved key"></label><label>Sync interval (seconds)<input id="interval" type="number" min="10" value="30"></label></section><section class="panel"><h2>Discord bot</h2><p class="muted">Uses the real Discord application Bot Token and Gateway, not a webhook.</p><label>Enable Discord bot<input id="den" type="checkbox"></label><label>Application ID<input id="daid"></label><label>Bot Token<input id="dt" type="password" placeholder="Leave blank to keep saved token"></label><label>Guild / Server ID<input id="dgid"></label><label>Channel ID<input id="dcid"></label><label>Admin Discord User ID<input id="duid" placeholder="Optional; server Administrators are also allowed"></label><button onclick="saveConfig()">Save configuration</button><p class="muted">Slash commands are registered to the configured guild. Timer-changing commands remain test-only until the Chaster/EmlaLock clients are validated.</p></section></main><script src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>C-EBOT ESP32</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+<header>
+  <div><h1>C-EBOT</h1><p>ESP32 standalone controller</p></div>
+  <span id="badge" class="badge">Connecting</span>
+</header>
+
+<section id="setupBanner" class="setup-banner hidden">
+  <div><strong>Complete C-EBOT setup</strong><p>Wi-Fi is connected. Enter your Chaster, EmlaLock and Discord settings below. The ESP32 will save them locally.</p></div>
+</section>
+
+<section class="grid">
+  <article><small>Chaster</small><strong id="chaster">—</strong></article>
+  <article><small>EmlaLock</small><strong id="emla">—</strong></article>
+  <article><small>Discord</small><strong id="discord">—</strong></article>
+</section>
+
+<section class="panel status-panel">
+  <div class="row"><b>Status</b><span id="state">—</span></div>
+  <p id="message">Loading…</p>
+  <p class="muted" id="network"></p>
+</section>
+
+<section class="actions">
+  <button onclick="post('/api/sync')">Sync now</button>
+  <button class="secondary" onclick="post('/api/pause')">Pause</button>
+  <button class="secondary" onclick="post('/api/resume')">Resume</button>
+  <button class="secondary" onclick="discordTest()">Test Discord</button>
+</section>
+
+<section class="panel setup-panel">
+  <div class="section-title"><div><h2>1. Chaster</h2><p class="muted">Enter the credentials used by the original c-ebot.</p></div><span class="step">SETUP</span></div>
+  <label>Chaster lock ID<input id="lock" autocomplete="off"></label>
+  <label>Chaster token<input id="ct" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved token"></label>
+  <label>Chaster keyholder token<input id="ckt" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved token"></label>
+</section>
+
+<section class="panel setup-panel">
+  <div class="section-title"><div><h2>2. EmlaLock</h2><p class="muted">Enter the account and keyholder API credentials.</p></div><span class="step">SETUP</span></div>
+  <label>EmlaLock user ID<input id="uid" autocomplete="off"></label>
+  <label>EmlaLock API key<input id="eak" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved key"></label>
+  <label>EmlaLock keyholder API key<input id="ekak" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved key"></label>
+</section>
+
+<section class="panel setup-panel">
+  <div class="section-title"><div><h2>3. Discord bot</h2><p class="muted">This uses the real Discord application bot and Gateway, not a webhook.</p></div><span class="step">OPTIONAL</span></div>
+  <label class="check"><input id="den" type="checkbox"> <span>Enable Discord bot</span></label>
+  <label>Application ID<input id="daid" autocomplete="off"></label>
+  <label>Bot token<input id="dt" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved token"></label>
+  <label>Guild / Server ID<input id="dgid" autocomplete="off"></label>
+  <label>Channel ID<input id="dcid" autocomplete="off"></label>
+  <label>Admin Discord User ID<input id="duid" autocomplete="off" placeholder="Optional; server Administrators are also allowed"></label>
+</section>
+
+<section class="panel setup-panel">
+  <div class="section-title"><div><h2>4. Sync settings</h2><p class="muted">The ESP32 continues running even when this webpage is closed.</p></div><span class="step">SETUP</span></div>
+  <label>Sync interval (seconds)<input id="interval" type="number" min="10" value="30"></label>
+  <button onclick="saveConfig()">Save C-EBOT configuration</button>
+  <p class="muted note">Credentials are stored on the ESP32 and are not returned to this webpage.</p>
+</section>
+
+<section class="panel info-panel">
+  <h2>Wi-Fi</h2>
+  <p class="muted">Wi-Fi setup is separate from C-EBOT setup. On first boot, connect to <b>C-EBOT-SETUP</b> and choose your home Wi-Fi. After the ESP32 connects, use its LAN IP to open this page.</p>
+</section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
